@@ -22,3 +22,22 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ MONGO_TIMEOUT_MS: '1.5' })).toThrow('MONGO_TIMEOUT_MS');
   });
 });
+
+describe('loadConfig worker settings', () => {
+  it('uses documented defaults', () => {
+    expect(loadConfig({})).toMatchObject({
+      workerConcurrency: 40,
+      leaseMs: 30000,
+      externalTimeoutMs: 15000,
+      processingDelayMs: 5000,
+      pollIntervalMs: 1000,
+      headCandidates: 20,
+    });
+  });
+
+  it('requires the external call timeout to be shorter than the lease', () => {
+    expect(() => loadConfig({ LEASE_MS: '10000', EXTERNAL_TIMEOUT_MS: '10000' })).toThrow(
+      'EXTERNAL_TIMEOUT_MS',
+    );
+  });
+});
