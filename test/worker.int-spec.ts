@@ -11,18 +11,23 @@ import {
   ProcessorInput,
   ProcessingResult,
 } from '../src/processing/processor';
-import { eventually, insertPending } from './support/events';
+import { EventStore, eventually, insertPending, openEventStore } from './support/events';
 import { testConfig } from './support/test-config';
 
 /** Controllable stand-in for the slow external system. */
 class StubProcessor implements Processor {
   readonly calls: ProcessorInput[] = [];
 
-  constructor(private readonly behaviour: (event: ProcessorInput) => Promise<ProcessingResult>) {}
+  constructor(
+    private readonly behaviour: (
+      event: ProcessorInput,
+      signal: AbortSignal,
+    ) => Promise<ProcessingResult>,
+  ) {}
 
-  process(event: ProcessorInput): Promise<ProcessingResult> {
+  process(event: ProcessorInput, signal: AbortSignal): Promise<ProcessingResult> {
     this.calls.push(event);
-    return this.behaviour(event);
+    return this.behaviour(event, signal);
   }
 }
 
@@ -46,17 +51,23 @@ const fastWorker = () =>
   });
 
 describe('WorkerService', () => {
-  let moduleRef: TestingModule;
+  let moduleRef: TestingModule | undefined;
   let events: Model<EventRecord>;
 
   afterEach(async () => {
-    await moduleRef.close();
+    await moduleRef?.close();
+    moduleRef = undefined;
   });
+
+  async function shutDown(): Promise<void> {
+    await moduleRef?.close();
+    moduleRef = undefined;
+  }
 
   it('completes events with the result of the processor', async () => {
     const processor = new StubProcessor(async (event) => ({ echo: event.id }));
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
 
     const id = await insertPending(events, {
       patientId: 'p1',
@@ -78,7 +89,7 @@ describe('WorkerService', () => {
       return {};
     });
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
     // Nothing is claimable until every event is inserted, so arrival order cannot interfere.
     const availableAt = new Date(Date.now() + 500);
     const times = ['10:03', '10:01', '10:04', '10:02'];
@@ -113,7 +124,7 @@ describe('WorkerService', () => {
       return { ok: true };
     });
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
 
     const id = await insertPending(events, {
       patientId: 'p1',
@@ -135,7 +146,7 @@ describe('WorkerService', () => {
       throw new Error('external down');
     });
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
 
     const id = await insertPending(events, {
       patientId: 'p1',
@@ -159,7 +170,7 @@ describe('WorkerService', () => {
       return {};
     });
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
     const availableAt = new Date(Date.now() + 300);
     const head = await insertPending(events, {
       patientId: 'p1',
@@ -189,7 +200,7 @@ describe('WorkerService', () => {
   it('fails an event whose lease expired on every attempt without calling the processor again', async () => {
     const processor = new StubProcessor(async () => ({}));
     moduleRef = await startWorker(fastWorker(), processor);
-    events = moduleRef.get(getModelToken(EventRecord.name));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
     const id = await insertPending(events, {
       patientId: 'p1',
       ts: '2026-01-01T10:00:00Z',
@@ -211,5 +222,59 @@ describe('WorkerService', () => {
       expect(await events.findById(id).lean()).toMatchObject({ status: 'failed', attempts: 4 });
     });
     expect(processor.calls).toHaveLength(0);
+  });
+
+  describe('graceful shutdown', () => {
+    // An independent connection to the worker's database, still usable after the worker closes its own.
+    let store: EventStore;
+
+    afterEach(async () => {
+      await store.connection.close();
+    });
+
+    it('lets in-flight work finish within the grace period', async () => {
+      const config = { ...fastWorker(), shutdownGraceMs: 5000 };
+      store = await openEventStore(config);
+      const processor = new StubProcessor(async () => {
+        await sleep(200);
+        return { finished: true };
+      });
+      moduleRef = await startWorker(config, processor);
+      const id = await insertPending(store.model, {
+        patientId: 'p1',
+        ts: '2026-01-01T10:00:00Z',
+        receivedAt: new Date(),
+      });
+      await eventually(async () => expect(processor.calls).toHaveLength(1));
+
+      await shutDown();
+
+      expect(await store.model.findById(id).lean()).toMatchObject({ status: 'completed' });
+    });
+
+    it('releases leases still held when the grace period runs out', async () => {
+      const config = { ...fastWorker(), shutdownGraceMs: 100 };
+      store = await openEventStore(config);
+      const processor = new StubProcessor(
+        (_event, signal) =>
+          new Promise((_resolve, reject) =>
+            signal.addEventListener('abort', () => reject(signal.reason)),
+          ),
+      );
+      moduleRef = await startWorker(config, processor);
+      const id = await insertPending(store.model, {
+        patientId: 'p1',
+        ts: '2026-01-01T10:00:00Z',
+        receivedAt: new Date(),
+      });
+      await eventually(async () => expect(processor.calls).toHaveLength(1));
+
+      await shutDown();
+
+      const doc = await store.model.findById(id).lean();
+      expect(doc).toMatchObject({ status: 'pending', attempts: 1 });
+      expect(doc?.leaseOwner).toBeUndefined();
+      expect(doc?.lastError).toBeUndefined();
+    });
   });
 });

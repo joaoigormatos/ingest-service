@@ -32,6 +32,11 @@ export interface AppConfig {
    * that arrives slightly late can still be applied first. 0 disables it. GRACE_MS, default 2000.
    */
   readonly graceMs: number;
+  /**
+   * On SIGTERM, how long in-flight events may keep running before their leases are released.
+   * Below Docker's 10 s stop timeout. SHUTDOWN_GRACE_MS, default 8000.
+   */
+  readonly shutdownGraceMs: number;
   /** Share of fake external calls that fail, 0..1, to exercise retries. FAKE_FAILURE_RATE, default 0. */
   readonly fakeFailureRate: number;
 }
@@ -55,6 +60,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     retryBaseMs: readInt(env, 'RETRY_BASE_MS', 1000),
     retryMaxMs: readInt(env, 'RETRY_MAX_MS', 30000),
     graceMs: readInt(env, 'GRACE_MS', 2000, 0),
+    shutdownGraceMs: readInt(env, 'SHUTDOWN_GRACE_MS', 8000),
     fakeFailureRate: readRate(env, 'FAKE_FAILURE_RATE', 0),
   };
   // A call that outlives its lease would race the worker that takes the event over.

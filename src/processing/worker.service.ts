@@ -1,9 +1,9 @@
 import {
+  BeforeApplicationShutdown,
   Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
-  OnApplicationShutdown,
 } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -24,12 +24,14 @@ type Outcome =
  * process it, store the outcome under its lease. All coordination happens in MongoDB.
  */
 @Injectable()
-export class WorkerService implements OnApplicationBootstrap, OnApplicationShutdown {
+export class WorkerService implements OnApplicationBootstrap, BeforeApplicationShutdown {
   /** Unique per process; it appears in every lease this process takes. */
   readonly workerId = `${hostname()}-${process.pid}-${randomBytes(3).toString('hex')}`;
   private readonly logger = new Logger(WorkerService.name);
   private running = false;
   private slots: Promise<void>[] = [];
+  /** Aborted when the shutdown grace period runs out, interrupting the external calls still running. */
+  private readonly shutdown = new AbortController();
 
   constructor(
     private readonly claims: ClaimRepository,
@@ -44,9 +46,20 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
     this.logger.log(`worker=${this.workerId} started ${this.slots.length} slots`);
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  /**
+   * Graceful shutdown (runs before the MongoDB connection closes): stop claiming, give in-flight events
+   * SHUTDOWN_GRACE_MS to finish, then interrupt the rest and release their leases. This is only an
+   * optimization: after a SIGKILL the leases expire and other workers take the events over anyway.
+   */
+  async beforeApplicationShutdown(): Promise<void> {
     this.running = false;
-    await Promise.all(this.slots);
+    const allDone = Promise.all(this.slots).then(() => true);
+    const graceOver = sleep(this.config.shutdownGraceMs, false, { ref: false });
+    if (!(await Promise.race([allDone, graceOver]))) {
+      this.logger.warn(`worker=${this.workerId} grace period over; releasing in-flight events`);
+      this.shutdown.abort();
+      await allDone;
+    }
   }
 
   private async runSlot(): Promise<void> {
@@ -92,6 +105,10 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
       );
     }
     const outcome = await this.callProcessor(claim);
+    if (!outcome.ok && this.shutdown.signal.aborted) {
+      // Interrupted by our own shutdown, not a failure of the event: hand it back without counting it.
+      return this.claims.release(claim);
+    }
     return outcome.ok
       ? this.claims.complete(claim, outcome.result)
       : this.onFailure(claim, outcome.error);
@@ -99,7 +116,8 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
 
   private async callProcessor(claim: ClaimedEvent): Promise<Outcome> {
     try {
-      const signal = AbortSignal.timeout(this.config.externalTimeoutMs);
+      const timeout = AbortSignal.timeout(this.config.externalTimeoutMs);
+      const signal = AbortSignal.any([timeout, this.shutdown.signal]);
       return { ok: true, result: await this.processor.process(toProcessorInput(claim), signal) };
     } catch (error) {
       return { ok: false, error: describeError(error) };
