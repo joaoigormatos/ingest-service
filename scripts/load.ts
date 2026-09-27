@@ -43,18 +43,17 @@ interface ClinicalEvent {
 const counters = { requests: 0, accepted: 0, duplicateResponses: 0, earlyAborts: 0, retries: 0 };
 const latenciesMs: number[] = [];
 
-function generateEvents(total: number): ClinicalEvent[] {
-  const clocks = Array.from({ length: PATIENTS }, () => Date.now() - 3_600_000);
-  return Array.from({ length: total }, (_, n) => {
-    const patient = Math.floor(Math.random() * PATIENTS);
-    clocks[patient] += 1_000 + Math.floor(Math.random() * 30_000); // strictly increasing per patient
-    return {
-      patientId: `patient-${patient}`,
-      type: n % 3 === 0 ? 'medication' : 'vitals',
-      ts: new Date(clocks[patient]).toISOString(),
-      data: { n, heartRate: 60 + Math.floor(Math.random() * 40) },
-    };
-  });
+/**
+ * Event time = the moment the event is scheduled to be sent, so ts increases per patient, stays close to
+ * real time and never overlaps an earlier run. Out-of-order delivery comes from shuffling, below.
+ */
+function generateEvents(total: number, startMs: number, intervalMs: number): ClinicalEvent[] {
+  return Array.from({ length: total }, (_, n) => ({
+    patientId: `patient-${Math.floor(Math.random() * PATIENTS)}`,
+    type: n % 3 === 0 ? 'medication' : 'vitals',
+    ts: new Date(startMs + n * intervalMs).toISOString(),
+    data: { n, heartRate: 60 + Math.floor(Math.random() * 40) },
+  }));
 }
 
 function shuffleWithinWindows<T>(items: readonly T[], size: number): T[] {
@@ -130,9 +129,10 @@ function toManifestEntry(event: ClinicalEvent, acknowledged: boolean): ManifestE
 }
 
 async function main(): Promise<void> {
-  const events = shuffleWithinWindows(generateEvents(RATE_PER_MIN * MINUTES), SHUFFLE_WINDOW);
   const intervalMs = 60_000 / RATE_PER_MIN;
   const startedAt = new Date();
+  const generated = generateEvents(RATE_PER_MIN * MINUTES, startedAt.getTime(), intervalMs);
+  const events = shuffleWithinWindows(generated, SHUFFLE_WINDOW);
   console.log(
     `sending ${events.length} events for ${PATIENTS} patients at ${RATE_PER_MIN}/min to ${EVENTS_URL}`,
   );
