@@ -14,7 +14,11 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "load": "tsx scripts/load.ts",
+    "verify": "tsx scripts/verify.ts",
+    "demo": "tsx scripts/load.ts && tsx scripts/verify.ts",
+    "chaos": "bash scripts/chaos.sh"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",

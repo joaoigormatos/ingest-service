@@ -44,6 +44,10 @@ services:
   worker:
     <<: *app
     command: ['node', 'dist/main.worker.js']
+    environment:
+      MONGO_URI: mongodb://mongo:27017/ingest?replicaSet=rs0
+      # Demo only: 5% of fake external calls fail, so retries and backoff show up in the numbers.
+      FAKE_FAILURE_RATE: '0.05'
     deploy:
       replicas: 3
 
