@@ -33,6 +33,12 @@ type StoredEvent = Pick<
   | 'outOfOrder'
 >;
 
+/** What was already applied for a patient before this run (the stack may have served earlier runs). */
+interface History {
+  readonly lastSeq: number;
+  readonly latestTs: number;
+}
+
 interface Check {
   readonly name: string;
   readonly problems: readonly string[];
@@ -83,8 +89,11 @@ function checkAllSettled(stored: readonly StoredEvent[]): Check {
   return { name: 'every event is completed or failed', problems };
 }
 
-/** patientSeq is 1..n per patient, and ts never goes backwards along it unless flagged outOfOrder. */
-function checkPatientOrder(stored: readonly StoredEvent[]): Check {
+/**
+ * patientSeq continues without gaps from the patient's history, and ts never goes backwards along it
+ * unless the event is flagged outOfOrder.
+ */
+function checkPatientOrder(stored: readonly StoredEvent[], history: Map<string, History>): Check {
   const byPatient = new Map<string, StoredEvent[]>();
   for (const event of stored.filter((e) => e.status === 'completed')) {
     byPatient.set(event.patientId, [...(byPatient.get(event.patientId) ?? []), event]);
@@ -92,12 +101,14 @@ function checkPatientOrder(stored: readonly StoredEvent[]): Check {
   const problems: string[] = [];
   for (const [patientId, events] of byPatient) {
     const applied = [...events].sort((a, b) => (a.patientSeq ?? 0) - (b.patientSeq ?? 0));
-    let latestTs = 0;
+    const before = history.get(patientId) ?? { lastSeq: 0, latestTs: 0 };
+    let latestTs = before.latestTs;
     applied.forEach((event, i) => {
       const ts = event.ts.getTime();
       const late = ts < latestTs;
-      if (event.patientSeq !== i + 1) {
-        problems.push(`${patientId}: expected patientSeq ${i + 1}, got ${event.patientSeq}`);
+      const expectedSeq = before.lastSeq + i + 1;
+      if (event.patientSeq !== expectedSeq) {
+        problems.push(`${patientId}: expected patientSeq ${expectedSeq}, got ${event.patientSeq}`);
       }
       if (late !== Boolean(event.outOfOrder)) {
         problems.push(`${patientId} seq ${event.patientSeq}: outOfOrder flag wrong`);
@@ -135,6 +146,23 @@ function printSummary(manifest: Manifest, stored: readonly StoredEvent[]): void 
 `);
 }
 
+async function loadHistory(
+  events: mongoose.mongo.Collection<StoredEvent>,
+  since: Date,
+): Promise<Map<string, History>> {
+  const rows = await events
+    .aggregate<{ _id: string; lastSeq: number; latestTs: Date }>([
+      { $match: { receivedAt: { $lt: since }, status: 'completed' } },
+      {
+        $group: { _id: '$patientId', lastSeq: { $max: '$patientSeq' }, latestTs: { $max: '$ts' } },
+      },
+    ])
+    .toArray();
+  return new Map(
+    rows.map((row) => [row._id, { lastSeq: row.lastSeq, latestTs: row.latestTs.getTime() }]),
+  );
+}
+
 async function main(): Promise<void> {
   const manifest = JSON.parse(readFileSync('manifest.json', 'utf8')) as Manifest;
   const since = new Date(manifest.report.startedAt);
@@ -143,13 +171,14 @@ async function main(): Promise<void> {
 
   await waitUntilSettled(events, since);
   const stored = await events.find({ receivedAt: { $gte: since } }).toArray();
+  const history = await loadHistory(events, since);
   await connection.close();
 
   const checks = [
     checkStoredExactlyOnce(manifest, stored),
     checkNoExtraEvents(manifest, stored),
     checkAllSettled(stored),
-    checkPatientOrder(stored),
+    checkPatientOrder(stored, history),
   ];
   for (const check of checks) {
     console.log(`${check.problems.length === 0 ? 'PASS' : 'FAIL'}  ${check.name}`);
