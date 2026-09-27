@@ -1,0 +1,51 @@
+# Local stack: MongoDB as a single-node replica set, one API, three workers.
+name: ingest
+x-app: &app
+  build: .
+  restart: always
+  init: true
+  environment:
+    MONGO_URI: mongodb://mongo:27017/ingest?replicaSet=rs0
+  depends_on:
+    mongo:
+      condition: service_healthy
+
+services:
+  mongo:
+    image: mongo:7
+    # A replica set (even of one node) is required for w:'majority' writes.
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Initiates the replica set on first boot; healthy once this node is a writable primary.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          const hello = db.hello();
+          if (!hello.setName) { try { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }) } catch (e) {} }
+          quit(hello.isWritablePrimary ? 0 : 1);
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  api:
+    <<: *app
+    command: ['node', 'dist/main.api.js']
+    ports:
+      - '3000:3000'
+
+  worker:
+    <<: *app
+    command: ['node', 'dist/main.worker.js']
+    deploy:
+      replicas: 3
+
+volumes:
+  mongo-data:
