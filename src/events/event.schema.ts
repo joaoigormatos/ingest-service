@@ -42,6 +42,10 @@ export class EventRecord {
   @Prop({ required: true, default: 0 })
   readonly attempts!: number;
 
+  /** How many times an expired lease on this event was taken over (i.e. a worker died or hung). */
+  @Prop()
+  readonly takeovers?: number;
+
   @Prop()
   readonly leaseOwner?: string;
 

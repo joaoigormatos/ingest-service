@@ -218,6 +218,7 @@ describe('ClaimRepository', () => {
         status: 'processing',
         leaseOwner: 'w2',
         attempts: 2,
+        takeovers: 1,
         leaseUntil: new Date(clock.now().getTime() + config.leaseMs),
       });
     });

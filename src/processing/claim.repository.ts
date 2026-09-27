@@ -39,7 +39,10 @@ export class ClaimRepository {
     return this.model
       .findOneAndUpdate(
         { status: 'processing', leaseUntil: { $lt: this.clock.now() } },
-        { $set: { leaseOwner: workerId, leaseUntil: this.leaseDeadline() }, $inc: { attempts: 1 } },
+        {
+          $set: { leaseOwner: workerId, leaseUntil: this.leaseDeadline() },
+          $inc: { attempts: 1, takeovers: 1 },
+        },
         { sort: { leaseUntil: 1 }, returnDocument: 'after' },
       )
       .lean<ClaimedEvent>()
