@@ -41,3 +41,20 @@ describe('loadConfig worker settings', () => {
     );
   });
 });
+
+describe('loadConfig retry settings', () => {
+  it('uses documented defaults', () => {
+    expect(loadConfig({})).toMatchObject({
+      maxAttempts: 5,
+      retryBaseMs: 1000,
+      retryMaxMs: 30000,
+      fakeFailureRate: 0,
+    });
+  });
+
+  it('accepts a failure rate between 0 and 1 only', () => {
+    expect(loadConfig({ FAKE_FAILURE_RATE: '0.25' }).fakeFailureRate).toBe(0.25);
+    expect(() => loadConfig({ FAKE_FAILURE_RATE: '1.5' })).toThrow('FAKE_FAILURE_RATE');
+    expect(() => loadConfig({ FAKE_FAILURE_RATE: 'x' })).toThrow('FAKE_FAILURE_RATE');
+  });
+});

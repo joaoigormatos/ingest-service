@@ -21,6 +21,14 @@ export interface AppConfig {
   readonly pollIntervalMs: number;
   /** Head candidates fetched per poll. HEAD_CANDIDATES, default 20. */
   readonly headCandidates: number;
+  /** Attempts before an event is marked failed. MAX_ATTEMPTS, default 5. */
+  readonly maxAttempts: number;
+  /** First retry delay; doubles per attempt. RETRY_BASE_MS, default 1000. */
+  readonly retryBaseMs: number;
+  /** Upper bound of the retry delay. RETRY_MAX_MS, default 30000. */
+  readonly retryMaxMs: number;
+  /** Share of fake external calls that fail, 0..1, to exercise retries. FAKE_FAILURE_RATE, default 0. */
+  readonly fakeFailureRate: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -38,6 +46,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
     processingDelayMs: readPositiveInt(env, 'PROCESSING_DELAY_MS', 5000),
     pollIntervalMs: readPositiveInt(env, 'POLL_INTERVAL_MS', 1000),
     headCandidates: readPositiveInt(env, 'HEAD_CANDIDATES', 20),
+    maxAttempts: readPositiveInt(env, 'MAX_ATTEMPTS', 5),
+    retryBaseMs: readPositiveInt(env, 'RETRY_BASE_MS', 1000),
+    retryMaxMs: readPositiveInt(env, 'RETRY_MAX_MS', 30000),
+    fakeFailureRate: readRate(env, 'FAKE_FAILURE_RATE', 0),
   };
   // A call that outlives its lease would race the worker that takes the event over.
   if (config.externalTimeoutMs >= config.leaseMs) {
@@ -52,6 +64,16 @@ function readPositiveInt(env: Env, name: string, fallback: number): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`Config ${name} must be a positive integer, got "${raw}"`);
+  }
+  return value;
+}
+
+function readRate(env: Env, name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`Config ${name} must be a number between 0 and 1, got "${raw}"`);
   }
   return value;
 }

@@ -10,6 +10,9 @@ export class FakeExternalProcessor implements Processor {
 
   async process(event: ProcessorInput, signal: AbortSignal): Promise<ProcessingResult> {
     await sleep(this.config.processingDelayMs, undefined, { signal });
+    if (Math.random() < this.config.fakeFailureRate) {
+      throw new Error('fake external system failed (injected)');
+    }
     return { processedBy: 'fake-external', eventType: event.type };
   }
 }

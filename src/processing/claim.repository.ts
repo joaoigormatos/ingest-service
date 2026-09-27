@@ -31,6 +31,22 @@ export class ClaimRepository {
   ) {}
 
   /**
+   * Takes over one event whose lease expired: its worker crashed, was killed or hung. The event stays
+   * 'processing', so the patient's slot in the partial index is kept and nothing overtakes it.
+   * attempts is incremented, which fences off the previous owner should it wake up.
+   */
+  takeOverExpired(workerId: string): Promise<ClaimedEvent | null> {
+    return this.model
+      .findOneAndUpdate(
+        { status: 'processing', leaseUntil: { $lt: this.clock.now() } },
+        { $set: { leaseOwner: workerId, leaseUntil: this.leaseDeadline() }, $inc: { attempts: 1 } },
+        { sort: { leaseUntil: 1 }, returnDocument: 'after' },
+      )
+      .lean<ClaimedEvent>()
+      .exec();
+  }
+
+  /**
    * Candidates to claim: the head event of each patient with nothing in flight, the patient
    * waiting longest first. Only a hint; claimHead re-validates atomically.
    */
@@ -86,6 +102,14 @@ export class ClaimRepository {
   releaseForRetry(claim: ClaimedEvent, error: string, availableAt: Date): Promise<boolean> {
     return this.writeIfLeaseHeld(claim, {
       $set: { status: 'pending', lastError: error, availableAt },
+      $unset: CLEAR_LEASE,
+    });
+  }
+
+  /** Gives up on the event. It is kept, never deleted, so nothing clinical is silently lost. */
+  markFailed(claim: ClaimedEvent, error: string): Promise<boolean> {
+    return this.writeIfLeaseHeld(claim, {
+      $set: { status: 'failed', lastError: error },
       $unset: CLEAR_LEASE,
     });
   }

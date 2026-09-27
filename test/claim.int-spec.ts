@@ -197,6 +197,73 @@ describe('ClaimRepository', () => {
     });
   });
 
+  describe('takeOverExpired', () => {
+    it('leaves leases that are still valid alone', async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      await claimHeadOf('w1');
+      clock.advance(config.leaseMs - 1);
+
+      expect(await claims.takeOverExpired('w2')).toBeNull();
+    });
+
+    it('hands an expired lease to another worker and counts the attempt', async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      const original = await claimHeadOf('w1');
+      clock.advance(config.leaseMs + 1);
+
+      const takeover = await claims.takeOverExpired('w2');
+
+      expect(takeover).toMatchObject({
+        _id: original._id,
+        status: 'processing',
+        leaseOwner: 'w2',
+        attempts: 2,
+        leaseUntil: new Date(clock.now().getTime() + config.leaseMs),
+      });
+    });
+
+    it('rejects the zombie finalize of the worker whose lease was taken over', async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      const zombie = await claimHeadOf('w1');
+      clock.advance(config.leaseMs + 1);
+      await claims.takeOverExpired('w2');
+
+      expect(await claims.complete(zombie, { from: 'zombie' })).toBe(false);
+
+      const doc = await store.model.findById(zombie._id).lean();
+      expect(doc).toMatchObject({ status: 'processing', leaseOwner: 'w2', attempts: 2 });
+      expect(doc?.result).toBeUndefined();
+    });
+  });
+
+  describe('retry backoff', () => {
+    it("keeps a patient's next event waiting while the head is in backoff", async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      const next = await pending('p1', '2026-01-01T10:01:00Z');
+      const head = await claimHeadOf('w1');
+      await claims.releaseForRetry(head, 'boom', new Date(clock.now().getTime() + 5000));
+
+      expect(await claims.findHeads()).toEqual([]);
+      expect(await claims.claimHead(next, 'w1')).toBeNull();
+
+      clock.advance(5000);
+      expect(await claims.findHeads()).toEqual([head._id]);
+    });
+  });
+
+  describe('markFailed', () => {
+    it('keeps the event, marked failed with its last error', async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      const claim = await claimHeadOf('w1');
+
+      expect(await claims.markFailed(claim, 'gave up')).toBe(true);
+
+      const doc = await store.model.findById(claim._id).lean();
+      expect(doc).toMatchObject({ status: 'failed', lastError: 'gave up', attempts: 1 });
+      expect(doc?.leaseOwner).toBeUndefined();
+    });
+  });
+
   it('ignores ObjectIds that do not exist', async () => {
     expect(await claims.claimHead(new Types.ObjectId(), 'w1')).toBeNull();
   });

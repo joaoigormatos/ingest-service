@@ -11,6 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { CLOCK, Clock } from '../common/clock';
 import { describeError } from '../common/errors';
 import { APP_CONFIG, AppConfig } from '../config/config';
+import { backoffMs } from './backoff';
 import { ClaimRepository, ClaimedEvent } from './claim.repository';
 import { PROCESSOR, Processor, ProcessorInput, ProcessingResult } from './processor';
 
@@ -62,7 +63,12 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
     }
   }
 
+  /** Expired leases first: an abandoned event blocks its whole patient until someone takes it over. */
   private async claimNext(): Promise<ClaimedEvent | null> {
+    return (await this.claims.takeOverExpired(this.workerId)) ?? (await this.claimNextHead());
+  }
+
+  private async claimNextHead(): Promise<ClaimedEvent | null> {
     for (const headId of await this.claims.findHeads()) {
       const claim = await this.claims.claimHead(headId, this.workerId);
       if (claim) return claim;
@@ -71,13 +77,24 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
   }
 
   private async handle(claim: ClaimedEvent): Promise<void> {
-    const outcome = await this.callProcessor(claim);
-    const stored = outcome.ok
-      ? await this.claims.complete(claim, outcome.result)
-      : await this.onFailure(claim, outcome.error);
+    const stored = await this.processAndStore(claim);
     if (!stored) {
       this.logger.warn(`${this.tag(claim)} lease lost; outcome discarded (another worker owns it)`);
     }
+  }
+
+  private async processAndStore(claim: ClaimedEvent): Promise<boolean> {
+    if (claim.attempts > this.config.maxAttempts) {
+      // Only reachable by takeover: every worker that tried this event died or hung (a poison pill).
+      return this.claims.markFailed(
+        claim,
+        `lease expired on all ${this.config.maxAttempts} attempts`,
+      );
+    }
+    const outcome = await this.callProcessor(claim);
+    return outcome.ok
+      ? this.claims.complete(claim, outcome.result)
+      : this.onFailure(claim, outcome.error);
   }
 
   private async callProcessor(claim: ClaimedEvent): Promise<Outcome> {
@@ -91,7 +108,16 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
 
   private onFailure(claim: ClaimedEvent, error: string): Promise<boolean> {
     this.logger.warn(`${this.tag(claim)} attempt ${claim.attempts} failed: ${error}`);
-    return this.claims.releaseForRetry(claim, error, this.clock.now());
+    if (claim.attempts >= this.config.maxAttempts) {
+      this.logger.error(`${this.tag(claim)} failed permanently after ${claim.attempts} attempts`);
+      return this.claims.markFailed(claim, error);
+    }
+    return this.claims.releaseForRetry(claim, error, this.retryAt(claim.attempts));
+  }
+
+  private retryAt(attempts: number): Date {
+    const policy = { baseMs: this.config.retryBaseMs, maxMs: this.config.retryMaxMs };
+    return new Date(this.clock.now().getTime() + backoffMs(attempts, policy));
   }
 
   /** Jittered so idle slots across processes do not poll in lockstep. */
