@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Model } from 'mongoose';
@@ -81,6 +82,29 @@ describe('WorkerService', () => {
         result: { echo: id.toHexString() },
       });
     });
+  });
+
+  it('logs each completed event with its id, patient and attempt', async () => {
+    const logged = jest.spyOn(Logger.prototype, 'log');
+    moduleRef = await startWorker(fastWorker(), new StubProcessor(async () => ({})));
+    events = moduleRef!.get(getModelToken(EventRecord.name));
+
+    const id = await insertPending(events, {
+      patientId: 'p1',
+      ts: '2026-01-01T10:00:00Z',
+      receivedAt: new Date(),
+    });
+
+    await eventually(async () => {
+      expect(logged).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(
+            `event=${id.toHexString()} worker=\\S+ completed patient=p1 attempt=1 in \\d+ ms`,
+          ),
+        ),
+      );
+    });
+    logged.mockRestore();
   });
 
   it('processes each patient in ts order while patients run in parallel', async () => {

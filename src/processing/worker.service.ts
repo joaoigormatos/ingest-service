@@ -111,14 +111,29 @@ export class WorkerService implements OnApplicationBootstrap, BeforeApplicationS
         `lease expired on all ${this.config.maxAttempts} attempts`,
       );
     }
+    const started = performance.now();
     const outcome = await this.callProcessor(claim);
     if (!outcome.ok && this.shutdown.signal.aborted) {
       // Interrupted by our own shutdown, not a failure of the event: hand it back without counting it.
       return this.claims.release(claim);
     }
     return outcome.ok
-      ? this.claims.complete(claim, outcome.result)
+      ? this.onSuccess(claim, outcome.result, performance.now() - started)
       : this.onFailure(claim, outcome.error);
+  }
+
+  private async onSuccess(
+    claim: ClaimedEvent,
+    result: ProcessingResult,
+    elapsedMs: number,
+  ): Promise<boolean> {
+    const stored = await this.claims.complete(claim, result);
+    if (stored) {
+      this.logger.log(
+        `${this.tag(claim)} completed patient=${claim.patientId} attempt=${claim.attempts} in ${Math.round(elapsedMs)} ms`,
+      );
+    }
+    return stored;
   }
 
   private async callProcessor(claim: ClaimedEvent): Promise<Outcome> {
