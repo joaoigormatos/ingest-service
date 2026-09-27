@@ -90,9 +90,16 @@ export class WorkerService implements OnApplicationBootstrap, BeforeApplicationS
   }
 
   private async handle(claim: ClaimedEvent): Promise<void> {
-    const stored = await this.processAndStore(claim);
-    if (!stored) {
-      this.logger.warn(`${this.tag(claim)} lease lost; outcome discarded (another worker owns it)`);
+    try {
+      const stored = await this.processAndStore(claim);
+      if (!stored) {
+        this.logger.warn(
+          `${this.tag(claim)} lease lost; outcome discarded (another worker owns it)`,
+        );
+      }
+    } catch (error) {
+      // The outcome could not be written; the lease will expire and the event will be taken over.
+      this.logger.error(`${this.tag(claim)} outcome not stored: ${describeError(error)}`);
     }
   }
 
