@@ -264,6 +264,71 @@ describe('ClaimRepository', () => {
     });
   });
 
+  describe('patient sequence', () => {
+    async function completeHead(workerId = 'w1') {
+      const claim = await claimHeadOf(workerId);
+      await claims.complete(claim, {});
+      return store.model.findById(claim._id).lean();
+    }
+
+    it("numbers a patient's completed events 1..n, per patient", async () => {
+      await pending('p1', '2026-01-01T10:00:00Z');
+      await pending('p1', '2026-01-01T10:01:00Z');
+      await pending('p2', '2026-01-01T10:00:00Z');
+
+      const done = [await completeHead(), await completeHead(), await completeHead()];
+
+      const seqOf = (patientId: string) =>
+        done.filter((d) => d?.patientId === patientId).map((d) => d?.patientSeq);
+      expect(seqOf('p1')).toEqual([1, 2]);
+      expect(seqOf('p2')).toEqual([1]);
+      expect(done.every((d) => d?.outOfOrder === false)).toBe(true);
+    });
+
+    it('flags an event older than one already applied as outOfOrder', async () => {
+      await pending('p1', '2026-01-01T10:05:00Z');
+      await completeHead();
+      await pending('p1', '2026-01-01T10:00:00Z'); // arrives after a later event was applied
+
+      const late = await completeHead();
+
+      expect(late).toMatchObject({ patientSeq: 2, outOfOrder: true });
+    });
+
+    it('compares against the latest applied ts, not just the previous event', async () => {
+      await pending('p1', '2026-01-01T10:05:00Z');
+      await completeHead();
+      await pending('p1', '2026-01-01T10:00:00Z');
+      await completeHead();
+      await pending('p1', '2026-01-01T10:03:00Z');
+
+      expect(await completeHead()).toMatchObject({ patientSeq: 3, outOfOrder: true });
+    });
+  });
+
+  it('applies a late event first when it arrives within the grace window', async () => {
+    const graceMs = 2000;
+    const later = await insertPending(store.model, {
+      patientId: 'p1',
+      ts: '2026-01-01T10:01:00Z',
+      receivedAt: clock.now(),
+      availableAt: new Date(clock.now().getTime() + graceMs),
+    });
+    clock.advance(1000);
+    const earlier = await insertPending(store.model, {
+      patientId: 'p1',
+      ts: '2026-01-01T10:00:00Z',
+      receivedAt: clock.now(),
+      availableAt: new Date(clock.now().getTime() + graceMs),
+    });
+
+    clock.advance(1000); // the later event's grace is over, but the head is now the earlier one
+    expect(await claims.findHeads()).toEqual([]);
+    clock.advance(1000);
+    expect(await claims.findHeads()).toEqual([earlier]);
+    expect(later).toBeDefined();
+  });
+
   it('ignores ObjectIds that do not exist', async () => {
     expect(await claims.claimHead(new Types.ObjectId(), 'w1')).toBeNull();
   });

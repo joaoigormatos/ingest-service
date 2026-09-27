@@ -56,6 +56,14 @@ export class EventRecord {
 
   @Prop()
   readonly completedAt?: Date;
+
+  /** 1..n: the order in which this patient's events were applied. Set on completion. */
+  @Prop()
+  readonly patientSeq?: number;
+
+  /** Applied after an event with a later ts: the patient's state was built in a different order. */
+  @Prop()
+  readonly outOfOrder?: boolean;
 }
 
 /** A plain (lean) events document as read from MongoDB. */
@@ -82,3 +90,14 @@ EventSchema.index({ status: 1, patientId: 1, ts: 1, _id: 1 }, { name: 'head_sele
 
 // Finding processing events whose lease expired (their worker died or hung).
 EventSchema.index({ status: 1, leaseUntil: 1 }, { name: 'expired_leases' });
+
+// Backs up the one-in-flight rule for sequencing: two completions can never get the same number.
+// Also serves "last sequence number of this patient" (the query must filter on patientSeq $exists).
+EventSchema.index(
+  { patientId: 1, patientSeq: -1 },
+  {
+    unique: true,
+    partialFilterExpression: { patientSeq: { $exists: true } },
+    name: 'patient_sequence_unique',
+  },
+);

@@ -15,10 +15,12 @@ const event = {
   ts: '2026-01-01T10:00:00Z',
 };
 
+const graceMs = 1500;
+
 async function createApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [ApiModule] })
     .overrideProvider(APP_CONFIG)
-    .useValue(testConfig())
+    .useValue(testConfig({ graceMs }))
     .compile();
   return moduleRef.createNestApplication().init();
 }
@@ -54,7 +56,8 @@ describe('POST /events', () => {
       attempts: 0,
       dedupKey: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(stored?.availableAt).toEqual(stored?.receivedAt);
+    // Held back for the grace window, so a slightly late earlier event can still be applied first.
+    expect(stored!.availableAt.getTime() - stored!.receivedAt.getTime()).toBe(graceMs);
   });
 
   it('stores the same event exactly once when it is sent 20 times concurrently', async () => {

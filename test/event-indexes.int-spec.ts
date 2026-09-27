@@ -40,5 +40,10 @@ describe('events collection indexes', () => {
       key: { status: 1, patientId: 1, ts: 1, _id: 1 },
     });
     expect(byName.get('expired_leases')).toMatchObject({ key: { status: 1, leaseUntil: 1 } });
+    expect(byName.get('patient_sequence_unique')).toMatchObject({
+      key: { patientId: 1, patientSeq: -1 },
+      unique: true,
+      partialFilterExpression: { patientSeq: { $exists: true } },
+    });
   });
 });

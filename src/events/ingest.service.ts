@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CLOCK, Clock } from '../common/clock';
+import { APP_CONFIG, AppConfig } from '../config/config';
 import { isDuplicateKeyError } from '../common/errors';
 import { computeDedupKey } from './dedup-key';
 import { CreateEventDto } from './event.dto';
@@ -18,6 +19,7 @@ export class IngestService {
   constructor(
     private readonly events: EventsRepository,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /** Stores the event durably, or finds the copy stored by an earlier delivery. */
@@ -50,7 +52,7 @@ export class IngestService {
       dedupKey: computeDedupKey({ patientId: dto.patientId, type: dto.type, ts, data: dto.data }),
       status: 'pending',
       receivedAt,
-      availableAt: receivedAt,
+      availableAt: new Date(receivedAt.getTime() + this.config.graceMs),
       attempts: 0,
     };
   }

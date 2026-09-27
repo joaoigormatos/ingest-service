@@ -52,6 +52,11 @@ describe('loadConfig retry settings', () => {
     });
   });
 
+  it('defaults the grace window to 2 s and allows turning it off', () => {
+    expect(loadConfig({}).graceMs).toBe(2000);
+    expect(loadConfig({ GRACE_MS: '0' }).graceMs).toBe(0);
+  });
+
   it('accepts a failure rate between 0 and 1 only', () => {
     expect(loadConfig({ FAKE_FAILURE_RATE: '0.25' }).fakeFailureRate).toBe(0.25);
     expect(() => loadConfig({ FAKE_FAILURE_RATE: '1.5' })).toThrow('FAKE_FAILURE_RATE');

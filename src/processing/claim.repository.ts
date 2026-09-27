@@ -91,9 +91,10 @@ export class ClaimRepository {
   }
 
   /** Stores the outcome. False if the lease was lost: the outcome must be discarded. */
-  complete(claim: ClaimedEvent, result: ProcessingResult): Promise<boolean> {
+  async complete(claim: ClaimedEvent, result: ProcessingResult): Promise<boolean> {
+    const sequence = await this.nextInSequence(claim);
     return this.writeIfLeaseHeld(claim, {
-      $set: { status: 'completed', result, completedAt: this.clock.now() },
+      $set: { status: 'completed', result, completedAt: this.clock.now(), ...sequence },
       $unset: CLEAR_LEASE,
     });
   }
@@ -150,6 +151,27 @@ export class ClaimRepository {
       $or: [{ ts: { $lt: event.ts } }, { ts: event.ts, _id: { $lt: event._id } }],
     });
     return earlier !== null;
+  }
+
+  /**
+   * Where this event lands in the patient's applied history. Reading then writing is safe because the
+   * patient has no other event in flight; the unique patient_sequence_unique index backs that up.
+   */
+  private async nextInSequence(
+    claim: ClaimedEvent,
+  ): Promise<{ patientSeq: number; outOfOrder: boolean }> {
+    const { patientId } = claim;
+    const [last, latest] = await Promise.all([
+      this.model
+        .findOne({ patientId, patientSeq: { $exists: true } })
+        .sort({ patientSeq: -1 })
+        .lean(),
+      this.model.findOne({ patientId, status: 'completed' }).sort({ ts: -1 }).lean(),
+    ]);
+    return {
+      patientSeq: (last?.patientSeq ?? 0) + 1,
+      outOfOrder: latest !== null && claim.ts < latest.ts,
+    };
   }
 
   private async writeIfLeaseHeld(

@@ -27,6 +27,11 @@ export interface AppConfig {
   readonly retryBaseMs: number;
   /** Upper bound of the retry delay. RETRY_MAX_MS, default 30000. */
   readonly retryMaxMs: number;
+  /**
+   * How long a new event waits before it can be processed, so an earlier event of the same patient
+   * that arrives slightly late can still be applied first. 0 disables it. GRACE_MS, default 2000.
+   */
+  readonly graceMs: number;
   /** Share of fake external calls that fail, 0..1, to exercise retries. FAKE_FAILURE_RATE, default 0. */
   readonly fakeFailureRate: number;
 }
@@ -37,18 +42,19 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 export function loadConfig(env: Env = process.env): AppConfig {
   const config: AppConfig = {
-    port: readPositiveInt(env, 'PORT', 3000),
+    port: readInt(env, 'PORT', 3000),
     mongoUri: env.MONGO_URI ?? 'mongodb://localhost:27017/ingest?replicaSet=rs0',
-    mongoTimeoutMs: readPositiveInt(env, 'MONGO_TIMEOUT_MS', 5000),
-    workerConcurrency: readPositiveInt(env, 'WORKER_CONCURRENCY', 40),
-    leaseMs: readPositiveInt(env, 'LEASE_MS', 30000),
-    externalTimeoutMs: readPositiveInt(env, 'EXTERNAL_TIMEOUT_MS', 15000),
-    processingDelayMs: readPositiveInt(env, 'PROCESSING_DELAY_MS', 5000),
-    pollIntervalMs: readPositiveInt(env, 'POLL_INTERVAL_MS', 1000),
-    headCandidates: readPositiveInt(env, 'HEAD_CANDIDATES', 20),
-    maxAttempts: readPositiveInt(env, 'MAX_ATTEMPTS', 5),
-    retryBaseMs: readPositiveInt(env, 'RETRY_BASE_MS', 1000),
-    retryMaxMs: readPositiveInt(env, 'RETRY_MAX_MS', 30000),
+    mongoTimeoutMs: readInt(env, 'MONGO_TIMEOUT_MS', 5000),
+    workerConcurrency: readInt(env, 'WORKER_CONCURRENCY', 40),
+    leaseMs: readInt(env, 'LEASE_MS', 30000),
+    externalTimeoutMs: readInt(env, 'EXTERNAL_TIMEOUT_MS', 15000),
+    processingDelayMs: readInt(env, 'PROCESSING_DELAY_MS', 5000),
+    pollIntervalMs: readInt(env, 'POLL_INTERVAL_MS', 1000),
+    headCandidates: readInt(env, 'HEAD_CANDIDATES', 20),
+    maxAttempts: readInt(env, 'MAX_ATTEMPTS', 5),
+    retryBaseMs: readInt(env, 'RETRY_BASE_MS', 1000),
+    retryMaxMs: readInt(env, 'RETRY_MAX_MS', 30000),
+    graceMs: readInt(env, 'GRACE_MS', 2000, 0),
     fakeFailureRate: readRate(env, 'FAKE_FAILURE_RATE', 0),
   };
   // A call that outlives its lease would race the worker that takes the event over.
@@ -58,12 +64,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
   return config;
 }
 
-function readPositiveInt(env: Env, name: string, fallback: number): number {
+function readInt(env: Env, name: string, fallback: number, min = 1): number {
   const raw = env[name];
   if (raw === undefined || raw === '') return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`Config ${name} must be a positive integer, got "${raw}"`);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`Config ${name} must be an integer >= ${min}, got "${raw}"`);
   }
   return value;
 }
