@@ -327,7 +327,7 @@ All timings and limits are typed and validated at startup (`src/config/config.ts
 
 ## Tests
 
-`npm test` runs 76 tests: pure unit tests (`*.spec.ts`) and integration tests (`*.int-spec.ts`). The
+`npm test` runs 77 tests: pure unit tests (`*.spec.ts`) and integration tests (`*.int-spec.ts`). The
 integration tests run against a real MongoDB replica set started by `mongodb-memory-server`, with
 majority/journaled writes and the real indexes. Nothing is mocked except the external system (a
 controllable stub processor) and, where time matters, the clock.
